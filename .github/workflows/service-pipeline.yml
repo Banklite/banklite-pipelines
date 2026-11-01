@@ -1,0 +1,91 @@
+# Pipeline reutilizable para los microservicios Python de BankLite.
+# Cada repositorio lo invoca con un workflow de 10 lineas (ver README). Cambiar el proceso aqui
+# actualiza el pipeline de todos los servicios.
+#
+#   test   -> compila, ejecuta las pruebas y verifica que la aplicacion importa
+#   docker -> construye la imagen y la publica en GitHub Container Registry (solo push a main)
+#   deploy -> avisa a Render (deploy hook) para que despliegue la version nueva (solo push a main)
+name: Pipeline de microservicio (reutilizable)
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        description: Nombre del servicio; tambien es el nombre de la imagen Docker.
+        type: string
+        required: true
+      python-version:
+        type: string
+        default: "3.12"
+    secrets:
+      RENDER_DEPLOY_HOOK_URL:
+        description: URL secreta del Deploy Hook del servicio en Render (Settings > Deploy Hook).
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test:
+    name: Pruebas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+      - run: pip install -r requirements.txt pytest httpx
+      - name: Compila el codigo
+        run: python -m compileall -q app
+      - name: Pruebas automaticas
+        run: python -m pytest -q tests
+        env:
+          DATABASE_URL: postgresql+psycopg2://u:p@localhost:5432/db
+          JWT_SECRET: secreto-solo-para-ci
+      - name: La aplicacion importa correctamente
+        run: python -c "import app.main"
+        env:
+          DATABASE_URL: postgresql+psycopg2://u:p@localhost:5432/db
+          JWT_SECRET: secreto-solo-para-ci
+
+  docker:
+    name: Imagen Docker
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Nombre de la imagen en minusculas (lo exige el registro)
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${{ inputs.service-name }}" >> "$GITHUB_ENV"
+      - uses: docker/login-action@v3
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          # En pull requests solo se comprueba que la imagen construye; en main ademas se publica.
+          push: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+
+  deploy:
+    name: Despliegue en Render
+    needs: docker
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispara el despliegue
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "::warning::Falta el secret RENDER_DEPLOY_HOOK_URL: no se despliega."
+            exit 0
+          fi
+          curl --fail --silent --show-error "$HOOK" > /dev/null
+          echo "Despliegue solicitado a Render para ${{ inputs.service-name }} (${GITHUB_SHA::7})"

@@ -1,0 +1,76 @@
+# Pipeline reutilizable para el frontend (Next.js) de BankLite.
+#   test   -> instala dependencias y construye la aplicacion (si no compila, no se despliega)
+#   docker -> construye la imagen y la publica en GitHub Container Registry (solo push a main)
+#   deploy -> avisa al hosting (deploy hook) si el secret existe (solo push a main)
+name: Pipeline de frontend (reutilizable)
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        type: string
+        required: true
+      node-version:
+        type: string
+        default: "20"
+    secrets:
+      DEPLOY_HOOK_URL:
+        description: Deploy Hook del hosting del frontend (Render o Vercel). Opcional.
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test:
+    name: Compilacion
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - run: npm install --no-audit --no-fund
+      - name: Construye la aplicacion
+        run: npm run build
+
+  docker:
+    name: Imagen Docker
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Nombre de la imagen en minusculas
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${{ inputs.service-name }}" >> "$GITHUB_ENV"
+      - uses: docker/login-action@v3
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+
+  deploy:
+    name: Despliegue
+    needs: docker
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispara el despliegue
+        env:
+          HOOK: ${{ secrets.DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "::notice::Sin DEPLOY_HOOK_URL: el hosting despliega por su integracion con GitHub."
+            exit 0
+          fi
+          curl --fail --silent --show-error "$HOOK" > /dev/null
+          echo "Despliegue solicitado para ${{ inputs.service-name }}"
