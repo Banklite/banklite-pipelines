@@ -59,7 +59,7 @@ jobs:
       - name: Nombre de la imagen en minusculas (lo exige el registro)
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${{ inputs.service-name }}" >> "$GITHUB_ENV"
       - uses: docker/login-action@v3
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -68,7 +68,7 @@ jobs:
         with:
           context: .
           # En pull requests solo se comprueba que la imagen construye; en main ademas se publica.
-          push: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+          push: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.sha }}
@@ -76,7 +76,7 @@ jobs:
   deploy:
     name: Despliegue en Render
     needs: docker
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     steps:
       - name: Dispara el despliegue
